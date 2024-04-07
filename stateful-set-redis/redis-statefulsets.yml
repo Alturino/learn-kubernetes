@@ -15,13 +15,13 @@ spec:
     spec:
       containers:
         - name: redis
-          command: [sh, -c, source /redis-config/init.sh]
           image: redis:7.2.4-alpine3.19
+          command: [sh, -c, source /redis-config/init.sh]
           ports:
             - name: redis
               containerPort: 6379
           volumeMounts:
-            - name: redis-data
+            - name: redis
               mountPath: /redis-data
             - name: redis-config
               mountPath: /redis-config
@@ -32,8 +32,6 @@ spec:
             - name: redis-config
               mountPath: /redis-config
       volumes:
-        - name: redis-data
-          emptyDir: {}
         - name: redis-config
           configMap:
             name: redis

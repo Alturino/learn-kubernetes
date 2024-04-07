@@ -1,63 +1,96 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+spec:
+  ports:
+    - name: mongo
+      port: 27017
+  clusterIP: None
+  selector:
+    app: mongo
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo
+data:
+  init.sh: |
+    #!/bin/bash
+    set -ex
+    # apt update && apt install iputils-ping -y
+
+    until ping -c 1 "$HOSTNAME".mongo; do
+      echo "waiting for DNS (${HOSTNAME}.mongo)..."
+      sleep 2
+    done
+
+    until /usr/bin/mongo --eval 'printjson(db.serverStatus())'; do
+      echo "connecting to local mongo..."
+      sleep 2
+    done
+    echo "connected to local"
+
+    HOST=mongo-0.mongo:27017
+    until /usr/bin/mongo --host="$HOST" --eval 'printjson(db.serverStatus())'; do
+      echo "connecting to remote mongo..."
+      sleep 2
+    done
+    echo "connected to remote"
+
+    if [[ "$HOSTNAME" == 'mongo-0' ]]; then
+      echo "initializing replica set"
+      /usr/bin/mongo --eval="printjson(rs.initiate({'_id': 'rs0', 'members': [{'_id': 0, 'host': 'mongo-0.mongo:27017'}]}))"
+    else
+      until /usr/bin/mongo --host="$HOST" --eval="printjson(rs.status())" | grep -v "no replset config has been received"; do
+        echo "waiting for replication set initialization"
+        sleep 2
+      done
+      echo "adding self to mongo-0"
+      /usr/bin/mongo --host="$HOST" --eval="printjson(rs.add('${HOSTNAME}.mongo'))"
+    fi
+    echo "initialized"
+
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: mongodb
+  name: mongo
 spec:
-  serviceName: mongodb
+  serviceName: mongo
+  replicas: 3
   selector:
     matchLabels:
-      app: mongodb
-  replicas: 3
+      app: mongo
   template:
     metadata:
       labels:
-        app: mongodb
+        app: mongo
     spec:
-      initContainers:
-        - name: init-mongodb
-          image: mongo:7.0.8-jammy
-          env:
-            - name: MONGO_INITDB_ROOT_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: mongodb
-                  key: MONGO_INITDB_ROOT_USERNAME
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: mongodb
-                  key: MONGO_INITDB_ROOT_PASSWORD
-          command: [bash, /data/db/config/init.sh]
-          volumeMounts:
-            - name: mongodb-config
-              mountPath: /data/db/config
       containers:
-        - name: mongodb
-          image: mongo:7.0.8-jammy
-          env:
-            - name: MONGO_INITDB_ROOT_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: mongodb
-                  key: MONGO_INITDB_ROOT_USERNAME
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: mongodb
-                  key: MONGO_INITDB_ROOT_PASSWORD
-          command: [mongod, --replset, rs0]
+        # this container is used as sidecar and needs to run side by side with the main mongodb container
+        #
+        # this container only use mongo cli tool to connect with other mongo replica since the main container needs to run with mongod
+        # and cannot execute other shell comand when mongod is running
+        - name: init-mongo
+          image: mongo:3.4.1
+          command: [bash, /config/init.sh]
           volumeMounts:
-            - name: mongodb
-              mountPath: /data/db
+            - name: config
+              mountPath: /config
+        - name: mongo
+          image: mongo:3.4.1
+          command: [mongod, --replSet, rs0]
+          livenessProbe:
+            exec:
+              command: [mongo, --eval, db.serverStatus()]
+            initialDelaySeconds: 10
+            timeoutSeconds: 10
+          ports:
+            - name: web
+              containerPort: 27017
       volumes:
-        - name: mongodb-config
+        - name: config
           configMap:
-            name: mongodb
-  volumeClaimTemplates:
-    - metadata:
-        name: mongodb
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
+            name: mongo

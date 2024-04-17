@@ -1,0 +1,84 @@
+services:
+  # to change owner of directory from global to user postgres
+  init-postgres-0:
+    container_name: init-postgres-0
+    image: postgres:16.1-alpine3.19
+    entrypoint: "/bin/bash -c 'chown postgres:postgres /mnt/server/archive'"
+    volumes:
+      - ./postgres-0/data:/data
+      - ./postgres-0/archive:/mnt/server/archive
+  postgres-0:
+    container_name: postgres-0
+    image: postgres:16.1-alpine3.19
+    depends_on:
+      init-postgres-0:
+        condition: service_completed_successfully
+    restart: always
+    command: postgres -c config_file=/config/postgresql.conf
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "postgres"]
+      interval: 5s
+      timeout: 30s
+      retries: 5
+      start_period: 10s
+    environment:
+      PGUSER: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      PGDATA: /data
+    ports:
+      - 5432:5432
+    volumes:
+      - ./postgres-0/data:/data
+      - ./postgres-0/config:/config
+      - ./postgres-0/archive:/mnt/server/archive
+    networks:
+      - postgres
+  init-postgres-1:
+    container_name: init-postgres-1
+    image: "postgres:16.1-alpine3.19"
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -ex
+        chmod 0600 /config/.pgpass 
+        createuser -h postgres-0 -p 5432 -U postgres --replication replication
+        pg_basebackup -h postgres-0 -p 5432 -U replication -D /data/ -Fp -Xs -R
+    environment:
+      PGPASSFILE: "/config/.pgpass"
+    depends_on:
+      postgres-0:
+        condition: service_healthy
+    volumes:
+      - ./postgres-1/data:/data
+      - ./postgres-1/.pgpass:/config/.pgpass
+    networks:
+      - postgres
+  postgres-1:
+    container_name: postgres-1
+    image: postgres:16.1-alpine3.19
+    command: postgres -c config_file=/config/postgresql.conf
+    depends_on:
+      postgres-0:
+        condition: service_started
+      init-postgres-1:
+        condition: service_completed_successfully
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      PGDATA: /data
+    ports:
+      - 5433:5432
+    volumes:
+      - ./postgres-1/data:/data
+      - ./postgres-1/config:/config
+      - ./postgres-1/archive:/mnt/server/archive
+    networks:
+      - postgres
+networks:
+  postgres:
+    name: postgres
